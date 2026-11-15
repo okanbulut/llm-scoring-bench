@@ -1,0 +1,26 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "llm-scoring-bench"
+version = "0.1.0"
+description = "Test LLMs on automated essay scoring with one config: prompt strategies, log-probability scores, calibration, QWK and PRMSE."
+readme = "README.md"
+license = { text = "MIT" }
+requires-python = ">=3.10"
+dependencies = ["numpy>=1.24", "pandas>=2.0", "pyyaml>=6.0", "openai>=1.40"]
+
+[project.optional-dependencies]
+parquet = ["pyarrow>=14"]
+dev = ["pytest>=8", "pyarrow>=14"]
+
+[project.scripts]
+scorebench = "scoringbench.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["tests"]
