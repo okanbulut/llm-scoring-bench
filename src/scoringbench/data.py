@@ -98,18 +98,23 @@ def load_essays(cfg: DataConfig) -> EssaySet:
 
 
 def split_anchors(frame: pd.DataFrame, n: int, seed: int) -> tuple[pd.DataFrame, pd.DataFrame]:
-    """Hold out n scored essays (stratified by h1 where possible) for calibration; return (anchors, rest)."""
+    """Hold out n scored essays for calibration; return (anchors, rest).
+
+    Proportional stratified sampling on h1: each score level contributes in proportion to its share of the
+    sample (largest-remainder rounding), so the anchors' human score distribution matches the population.
+    Equal numbers per level would over-represent rare extreme scores and stretch a quantile map."""
     if n <= 0:
         return frame.iloc[:0], frame
+    n = min(n, len(frame) - 1)
     rng = np.random.default_rng(seed)
-    order = rng.permutation(len(frame))
-    shuffled = frame.iloc[order]
-    # spread anchors over score levels: round-robin across h1 levels
-    picks: list[int] = []
-    by_level = {lvl: list(idx) for lvl, idx in shuffled.groupby("h1").groups.items()}
-    while len(picks) < n and any(by_level.values()):
-        for lvl in sorted(by_level):
-            if by_level[lvl] and len(picks) < n:
-                picks.append(by_level[lvl].pop(0))
+    counts = frame["h1"].value_counts().sort_index()
+    raw = counts / counts.sum() * n
+    take = np.floor(raw).astype(int)
+    for lvl in (raw - take).sort_values(ascending=False).index[: n - int(take.sum())]:
+        take[lvl] += 1
+    picks: list = []
+    for lvl, k in take.items():
+        idx = frame.index[frame["h1"] == lvl].to_numpy()
+        picks.extend(rng.choice(idx, size=min(k, len(idx)), replace=False).tolist())
     anchors = frame.loc[picks]
     return anchors, frame.drop(index=picks)

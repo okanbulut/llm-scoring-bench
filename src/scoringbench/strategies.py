@@ -32,6 +32,9 @@ class Vanilla(Strategy):
 
     def messages(self, essay: dict) -> list[dict]:
         parts = []
+        if self.task.context:
+            parts.append(f"About the writers:\n{self.task.context.strip()}\nJudge the essay against what the rubric "
+                         f"expects of these writers, not against adult or professional writing.")
         if self.task.prompt_text:
             parts.append(f"Writing prompt the student answered:\n{self.task.prompt_text.strip()}")
         if self.task.rubric:
