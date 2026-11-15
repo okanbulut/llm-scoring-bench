@@ -45,3 +45,12 @@ def test_agreement_and_smd():
     assert agreement([1, 2, 3], [1, 3, 5]) == {"exact": pytest.approx(1 / 3), "adjacent": pytest.approx(2 / 3)}
     assert smd([2, 3, 4], [2, 3, 4]) == pytest.approx(0.0)
     assert smd([3, 4, 5], [2, 3, 4]) > 0
+
+
+def test_subgroup_smd_uses_overall_sd():
+    import pandas as pd
+    from scoringbench.metrics import evaluate
+    df = pd.DataFrame({"h1": [1, 2, 3, 4, 5, 6] * 10, "g": ["a", "b"] * 30})
+    df["s"] = df["h1"] - 0.5
+    out = evaluate(df, "s", "s", 1, 6, ["g"])
+    assert out["smd[g=a]"] == pytest.approx(out["smd"], rel=0.01)
