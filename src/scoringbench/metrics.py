@@ -84,12 +84,16 @@ def agreement(a, b) -> dict:
     return {"exact": float((d == 0).mean()), "adjacent": float((d <= 1).mean())} if len(a) else {"exact": np.nan, "adjacent": np.nan}
 
 
-def smd(system, human) -> float:
-    """Standardised mean difference, (mean system - mean human) / pooled SD."""
+def smd(system, human, sd: float | None = None) -> float:
+    """Standardised mean difference, (mean system - mean human) / pooled SD.
+
+    Pass `sd` to standardise by a fixed SD; subgroup SMDs use the whole sample's pooled SD (as in rsmtool),
+    so groups are on one scale and not inflated by a smaller within-group SD."""
     s, h = _clean(system, human)
-    if len(s) < 2:
+    if len(s) < 2 and sd is None:
         return float("nan")
-    sd = np.sqrt((s.var(ddof=1) + h.var(ddof=1)) / 2)
+    if sd is None:
+        sd = np.sqrt((s.var(ddof=1) + h.var(ddof=1)) / 2)
     return float((s.mean() - h.mean()) / sd) if sd > 0 else float("nan")
 
 
@@ -108,9 +112,11 @@ def evaluate(df: pd.DataFrame, cont_col: str, int_col: str, lo: int, hi: int, gr
         out["qwk_h2"] = qwk(df[int_col], df["h2"], lo, hi)
         out["prmse"] = prmse(df[cont_col], df["h1"], df["h2"])
         out["prmse_int"] = prmse(df[int_col], df["h1"], df["h2"])
+    s_all, h_all = _clean(df[cont_col], df["h1"])
+    pooled = float(np.sqrt((s_all.var(ddof=1) + h_all.var(ddof=1)) / 2)) if len(s_all) > 1 else float("nan")
     for g in groups:
         for level, sub in df.groupby(g, dropna=True):
-            out[f"smd[{g}={level}]"] = smd(sub[cont_col], sub["h1"])
+            out[f"smd[{g}={level}]"] = smd(sub[cont_col], sub["h1"], sd=pooled)
     return out
 
 

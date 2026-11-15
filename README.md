@@ -5,7 +5,7 @@ the rubric, the models and the prompt strategies; run one command; get every mod
 the same essays, with the metrics operational scoring programs use.
 
 ```bash
-pip install -e .
+pip install -e .          # Python 3.10+ (macOS system python3 is 3.9: use Homebrew or pyenv)
 export TYK_KEY=...            # or OPENAI_API_KEY, or whatever api_key_env names
 scorebench run examples/asap_set1.yaml --sample 20    # quick check
 scorebench run examples/asap_set1.yaml                 # full run
