@@ -1,0 +1,9 @@
+PLACEHOLDER RUBRIC: replace with the official rubric for your data (e.g. the PERSUADE holistic rubric or the
+ASAP prompt rubric) before running a real study.
+
+6: Clear, insightful position; strong, well-chosen evidence; well organised; varied, precise language; few errors.
+5: Clear position; generally strong evidence; well organised; good command of language; minor errors.
+4: Adequate position; adequate evidence; generally organised; adequate language; some errors.
+3: Position present but weakly developed; limited or uneven evidence; some lapses in organisation; errors may distract.
+2: Vague or limited position; little evidence; poor organisation; frequent errors that interfere with meaning.
+1: No clear position; little or no relevant development; disorganised; serious, pervasive errors.

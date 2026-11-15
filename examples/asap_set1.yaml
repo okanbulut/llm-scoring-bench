@@ -1,0 +1,32 @@
+# ASAP-AES prompt 1 (two raters on a 1-6 scale, so PRMSE is reported).
+# Run:  TYK_KEY=... scorebench run examples/asap_set1.yaml --sample 20   (quick check first)
+name: asap-set1
+data:
+  loader: asap
+  path: ../data/asap/training_set_rel3.tsv   # relative to this file; edit to where your ASAP file lives
+  filter: {essay_set: 1}
+  sample: 300
+  seed: 1
+task:
+  # Paraphrased: paste the exact prompt text before a real run.
+  prompt_text: >-
+    More and more people use computers, but not everyone agrees that this benefits society. Write a letter to
+    your local newspaper in which you state your opinion on the effects computers have on people.
+  rubric_file: rubrics/holistic_1to6_placeholder.txt   # replace with the ASAP prompt 1 rubric
+models:
+  - name: qwen35-122b
+    base_url: https://inference.vulcan.alliancecan.ca/v1
+    api_key_env: TYK_KEY
+    api_key_file: ../../API_key.rtf      # optional: a file with a TYK_KEY = '...' line; never committed
+    extra_body: {reasoning_effort: none}
+  - name: qwen38-27b
+    base_url: https://inference.vulcan.alliancecan.ca/v1
+    api_key_env: TYK_KEY
+    api_key_file: ../../API_key.rtf
+    extra_body: {reasoning_effort: none}
+strategies:
+  - vanilla
+  - {name: vanilla, calibrate: quantile, anchors: 25}
+output_dir: ../runs
+cache: ../runs/cache.sqlite
+workers: 4

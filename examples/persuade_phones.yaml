@@ -1,0 +1,26 @@
+# PERSUADE 2.0, one independent-writing prompt. Only one human score, so QWK but no PRMSE.
+name: persuade-phones-driving
+data:
+  loader: persuade
+  path: ../data/persuade_essays.parquet
+  filter: {task: Independent, prompt_name: Phones and driving}
+  sample: 300
+  seed: 1
+  groups: [ell_status, gender]
+task:
+  # Paraphrased: paste the exact prompt text before a real run.
+  prompt_text: >-
+    Today the majority of humans own and operate cell phones on a daily basis. Write an explanatory essay to
+    your principal in which you explain if drivers should or should not be able to use cell phones in any
+    capacity while operating a vehicle.
+  rubric_file: rubrics/holistic_1to6_placeholder.txt   # replace with the PERSUADE holistic rubric
+models:
+  - name: qwen35-122b
+    base_url: https://inference.vulcan.alliancecan.ca/v1
+    api_key_env: TYK_KEY
+    extra_body: {reasoning_effort: none}
+strategies:
+  - vanilla
+  - {name: vanilla, calibrate: quantile, anchors: 25}
+output_dir: ../runs
+cache: ../runs/cache.sqlite
