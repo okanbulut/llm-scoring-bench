@@ -79,6 +79,12 @@ class FakeBackend:
 
     def complete(self, messages: list[dict]) -> dict:
         text = messages[-1]["content"]
+        if "Essay A:" in text and "Essay B:" in text:  # pairwise: noisy comparison with a pull towards "A"
+            ta, tb = (int(x) for x in re.findall(r"\[true=(\d+)\]", text)[:2])
+            pa = 1 / (1 + math.exp(-(1.2 * (ta - tb) + 0.6)))
+            lp = {"A": math.log(max(pa, 1e-9)), "B": math.log(max(1 - pa, 1e-9))}
+            return {"content": "A" if pa >= 0.5 else "B", "first_token_logprobs": lp,
+                    "prompt_tokens": len(text) // 4, "completion_tokens": 1}
         hit = re.search(r"\[true=(\d+)\]", text)
         true = int(hit.group(1)) if hit else 3
         lo_hi = re.search(r"from (\d+) to (\d+)", text)
