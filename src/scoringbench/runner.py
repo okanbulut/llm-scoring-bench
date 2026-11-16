@@ -44,6 +44,7 @@ def run_study(cfg: StudyConfig, out_dir: str | Path | None = None, progress: boo
     cache = Cache(cache_path if cache_path.is_absolute() else cfg.base_dir / cache_path)
     frame = essays.frame
     rows, metric_rows = [], []
+    fusion_params: dict = {}
 
     for m in cfg.models:
         ask = _asker(make_backend(m, cfg.base_dir), m, cache)
@@ -63,6 +64,10 @@ def run_study(cfg: StudyConfig, out_dir: str | Path | None = None, progress: boo
             pred["probs"] = [json.dumps(p) for p in res["probs"]]
             if "raw" in res:
                 pred["raw"] = res["raw"].values
+            if "se" in res:
+                pred["se"] = res["se"].values
+            if "fusion_params" in res and res["fusion_params"].notna().any():
+                fusion_params[f"{m.display} | {s.display}"] = res["fusion_params"].dropna().iloc[0]
             if "traits" in res:
                 pred["traits"] = [json.dumps(t) for t in res["traits"]]
             anchors, test = split_anchors(pred, s.anchors, cfg.data.seed) if s.calibrate else (pred.iloc[:0], pred)
@@ -93,7 +98,7 @@ def run_study(cfg: StudyConfig, out_dir: str | Path | None = None, progress: boo
     meta = {"study": cfg.name, "n_essays": len(frame), "score_range": [lo, hi], "human_human": human,
             "seconds": round(time.time() - t0, 1), "data": asdict(cfg.data),
             "models": [{k: v for k, v in asdict(m).items() if "key" not in k} for m in cfg.models],
-            "strategies": [asdict(s) for s in cfg.strategies]}
+            "strategies": [asdict(s) for s in cfg.strategies], "fusion_params": fusion_params}
     (out / "run.json").write_text(json.dumps(meta, indent=2, default=str))
     write_report(out / "report.html", cfg.name, metrics, human, meta)
     if progress:

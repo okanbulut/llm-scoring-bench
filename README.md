@@ -21,7 +21,7 @@ with the full score distribution), `report.html`, and `run.json` (settings, huma
 | Data | ASAP-AES (per prompt, two raters), PERSUADE 2.0, any CSV/TSV/parquet | ASAP++ traits |
 | Models | Any OpenAI-compatible endpoint (Alliance Vulcan, vLLM, OpenAI, Ollama); retries while a model spins up | Local Hugging Face |
 | Scores | Reads the score distribution from first-token log-probabilities; keeps the expected score and the most likely score; falls back to the reply text | |
-| Strategies | `vanilla` (rubric + essay); `mts` (trait-by-trait, Lee et al. 2024); `pairwise` (comparative judgment with both orders and a Bradley-Terry model, after LCES, Shibata et al. 2025) | few-shot, the fusion model |
+| Strategies | `vanilla` (rubric + essay); `mts` (trait-by-trait, Lee et al. 2024); `pairwise` (comparative judgment with both orders and a Bradley-Terry model, after LCES, Shibata et al. 2025) ; `fusion` (this project's method: holistic and trait score distributions plus pairwise outcomes in one graded-response + Bradley-Terry model, with SEs) | few-shot |
 | Calibration | Quantile (equipercentile) linking on a few scored anchor essays | |
 | Metrics | QWK (vs rater 1 and 2), PRMSE, exact/adjacent agreement, r, mean difference, SMD overall and by subgroup, SD ratio, calls and tokens per essay | Rater-effect diagnostics |
 | Cache | Every reply is cached in SQLite by a hash of model, prompt and settings, so reruns are free | |
@@ -33,7 +33,7 @@ essay, so it is reported for ASAP but not for PERSUADE (one final score).
 
 See `examples/asap_set1.yaml`. Keys: `data` (loader, path, filter, sample, seed, groups), `task`
 (`prompt_text` / `rubric` / `context`, or `*_file`), `models` (name, base_url, api_key_env, extra_body...), `strategies`
-(a name, or `{name, calibrate, anchors, label, ...options}`; `mts` takes `traits`, `pairwise` takes `k`, `seed`, `both_orders`), `output_dir`, `cache`, `workers`.
+(a name, or `{name, calibrate, anchors, label, ...options}`; `mts` takes `traits`, `pairwise` takes `k`, `seed`, `both_orders`; `fusion` takes `components`, plus the `mts` and `pairwise` options), `output_dir`, `cache`, `workers`.
 
 For Qwen models on Vulcan, pass `extra_body: {reasoning_effort: none}` so the model answers without hidden
 reasoning tokens.

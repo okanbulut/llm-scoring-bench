@@ -118,7 +118,8 @@ class MTS(Strategy):
         return {"expected": mean, "mode": float("nan"), "probs": [], "coverage": float(np.mean([d["coverage"] for d in trait_scores.values()])),
                 "source": "logprobs" if srcs == {"logprobs"} else ("unparsed" if "unparsed" in srcs else "text"),
                 "calls": len(self.traits), "tokens": tokens,
-                "traits": {k: round(v["expected"], 4) for k, v in trait_scores.items()}}
+                "traits": {k: round(v["expected"], 4) for k, v in trait_scores.items()},
+                "trait_probs": {k: v["probs"] for k, v in trait_scores.items()}}
 
     def score_set(self, essays, ask, workers=4):
         out = super().score_set(essays, ask, workers)
@@ -188,7 +189,8 @@ class Pairwise(Strategy):
         # cap so that each essay has about k partners on average
         return pairs[: max(1, n * k // 2)]
 
-    def score_set(self, essays, ask, workers=4):
+    def collect(self, essays, ask, workers=4):
+        """Ask every planned comparison. Returns (pairs [(i, j, P(i better))], calls per essay, tokens per essay)."""
         n = len(essays)
         both = bool(self.cfg.options.get("both_orders", True))
         jobs = []
@@ -212,6 +214,11 @@ class Pairwise(Strategy):
             for e in (a, b):
                 calls[e] += 0.5; tokens[e] += tok / 2
         pairs = [(i, j, float(np.mean(ps))) for (i, j), ps in prob.items()]
+        return pairs, calls, tokens
+
+    def score_set(self, essays, ask, workers=4):
+        n = len(essays)
+        pairs, calls, tokens = self.collect(essays, ask, workers)
         theta = bradley_terry(n, pairs)
         scaled = self.minmax(theta)
         return [{"expected": float(scaled[e]), "raw": float(theta[e]), "mode": float("nan"), "probs": [],
@@ -219,7 +226,56 @@ class Pairwise(Strategy):
                 for e in range(n)]
 
 
-STRATEGIES = {"vanilla": Vanilla, "mts": MTS, "pairwise": Pairwise}
+class Fusion(Strategy):
+    """Psychometric fusion of LLM judgments (this project's method).
+
+    Collects, for every essay, the holistic score distribution (vanilla prompt), one score distribution per
+    trait (MTS prompts) and soft pairwise outcomes (pairwise prompts), all with the same prompts as those
+    strategies so cached replies are reused. A joint model treats them as indicators of one latent quality:
+    a graded response model per score indicator (own discrimination and thresholds, which absorb severity and
+    scale compression) and a Bradley-Terry model for comparisons. Output: the latent score (MAP) and its SE,
+    min-max scaled to the rubric range unless a calibration is set.
+    Options: components (subset of [vanilla, mts, pairwise]; default all), traits, k, seed, both_orders,
+    scale ("minmax" or "none")."""
+
+    name = "fusion"
+
+    def __init__(self, cfg, task, score_range):
+        super().__init__(cfg, task, score_range)
+        self.components = cfg.options.get("components") or ["vanilla", "mts", "pairwise"]
+        self.vanilla = Vanilla(cfg, task, score_range)
+        self.mts = MTS(cfg, task, score_range)
+        self.pairwise = Pairwise(cfg, task, score_range)
+
+    def score_set(self, essays, ask, workers=4):
+        from .fusion import fit_fusion
+
+        n = len(essays)
+        indicators: dict[str, np.ndarray] = {}
+        calls, tokens = np.zeros(n), np.zeros(n)
+        if "vanilla" in self.components:
+            out = Strategy.score_set(self.vanilla, essays, ask, workers)
+            indicators["holistic"] = np.array([o["probs"] for o in out], float)
+            calls += [o["calls"] for o in out]; tokens += [o["tokens"] for o in out]
+        if "mts" in self.components:
+            out = Strategy.score_set(self.mts, essays, ask, workers)
+            for t in self.mts.traits:
+                indicators[t["name"]] = np.array([o["trait_probs"][t["name"]] for o in out], float)
+            calls += [o["calls"] for o in out]; tokens += [o["tokens"] for o in out]
+        pairs = []
+        if "pairwise" in self.components:
+            pairs, c, tok = self.pairwise.collect(essays, ask, workers)
+            calls += c; tokens += tok
+        fit = fit_fusion(indicators, pairs, n)
+        theta, se = fit["theta"], fit["se"]
+        scaled = self.minmax(theta) if self.cfg.options.get("scale", "minmax") == "minmax" else theta
+        return [{"expected": float(scaled[e]), "raw": float(theta[e]), "se": float(se[e]), "mode": float("nan"),
+                 "probs": [], "coverage": 1.0, "source": "logprobs", "calls": float(calls[e]),
+                 "tokens": float(tokens[e]), "fusion_params": fit["params"] if e == 0 else None}
+                for e in range(n)]
+
+
+STRATEGIES = {"vanilla": Vanilla, "mts": MTS, "pairwise": Pairwise, "fusion": Fusion}
 
 
 def make_strategy(cfg: StrategyConfig, task: TaskConfig, score_range: tuple[int, int]) -> Strategy:
