@@ -466,8 +466,46 @@ class Hybrid(Strategy):
                  "fusion_params": params if e == 0 else None} for e in range(n)]
 
 
+class Finetune(Strategy):
+    """Supervised baseline: fine-tune an encoder (e.g. UltraBERT) on the anchors' human scores and predict the
+    rest. No LLM calls. Predictions are on the score scale, so use it without calibrate (anchors are still left
+    out of the test set because the runner and `scorebench seeds` split them off). Needs torch + transformers.
+    Options: model (Hugging Face id or path), epochs (10), lr (3e-5), batch_size (8), max_length (512),
+    grad_accum (1), device, trust_remote_code, seeds (limit draws in `scorebench seeds`; training is slow)."""
+
+    name = "finetune"
+
+    def __init__(self, cfg, task, score_range):
+        super().__init__(cfg, task, score_range)
+        self.anchor_labels: dict[int, float] = {}
+
+    def score_set(self, essays, ask, workers=4):
+        if not self.anchor_labels:
+            raise ValueError("strategy 'finetune' needs anchors: set anchors (and calibrate) for it in the config")
+        o = self.cfg.options
+        idx = sorted(self.anchor_labels)
+        texts = [e["text"] for e in essays]
+        if o.get("model") == "fake":  # offline tests: ridge on the fake embeddings stands in for training
+            from .embeddings import _fake, ridge_loo
+
+            E = _fake(texts)
+            pred = ridge_loo(E[idx], [self.anchor_labels[i] for i in idx])["predict"](E)
+        else:
+            from .finetune import finetune_predict
+
+            pred = finetune_predict([texts[i] for i in idx], [self.anchor_labels[i] for i in idx], texts,
+                                    o["model"], epochs=int(o.get("epochs", 10)), lr=float(o.get("lr", 3e-5)),
+                                    batch_size=int(o.get("batch_size", 8)), max_length=int(o.get("max_length", 512)),
+                                    grad_accum=int(o.get("grad_accum", 1)), device=o.get("device"),
+                                    trust_remote_code=bool(o.get("trust_remote_code", False)),
+                                    seed=int(o.get("seed", 1)))
+        pred = np.clip(pred, self.lo, self.hi)
+        return [{"expected": float(p), "raw": float(p), "mode": float("nan"), "probs": [], "coverage": 1.0,
+                 "source": "finetune", "calls": 0.0, "tokens": 0.0} for p in pred]
+
+
 STRATEGIES = {"vanilla": Vanilla, "mts": MTS, "pairwise": Pairwise, "fusion": Fusion, "anchored": Anchored,
-              "hybrid": Hybrid}
+              "hybrid": Hybrid, "finetune": Finetune}
 
 
 def make_strategy(cfg: StrategyConfig, task: TaskConfig, score_range: tuple[int, int]) -> Strategy:
