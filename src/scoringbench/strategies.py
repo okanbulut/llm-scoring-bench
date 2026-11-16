@@ -429,7 +429,7 @@ class Hybrid(Strategy):
 
         E = embed_texts([e["text"] for e in essays], dict(opts.get("embed", {"backend": "fake"})),
                         self.embed_cache, Path(self.base_dir or "."))
-        alphas = tuple(opts.get("alphas", (0.1, 1, 10, 100, 1000, 1e4)))
+        alphas = tuple(opts.get("alphas", (0.001, 0.01, 0.1, 1, 10, 100, 1000)))
         rr = ridge_loo(E[idx], y, alphas)
         emb = np.empty(n)
         emb[idx] = rr["oof"]

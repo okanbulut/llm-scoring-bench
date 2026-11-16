@@ -89,7 +89,7 @@ def embed_texts(texts: list[str], spec: dict, cache: Cache | None = None, base_d
     return np.array(vecs, float)
 
 
-def ridge_loo(X: np.ndarray, y: np.ndarray, alphas=(0.1, 1, 10, 100, 1000, 1e4)) -> dict:
+def ridge_loo(X: np.ndarray, y: np.ndarray, alphas=(0.001, 0.01, 0.1, 1, 10, 100, 1000)) -> dict:
     """Ridge regression of y on X (centred), alpha chosen by exact leave-one-out error.
     Works in the n x n kernel form, so it is cheap for few anchors and wide embeddings.
     Returns alpha, out-of-fold predictions for the training rows, and a predict(X_new) function."""
