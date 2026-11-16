@@ -31,3 +31,24 @@ def test_quantile_calibration_undoes_severity():
     out = cal.transform(model[100:])
     assert abs(out.mean() - human[100:].mean()) < 0.3
     assert np.std(out) == pytest.approx(np.std(human[100:]), rel=0.15)
+
+
+def test_anchor_split_matches_population_distribution():
+    import pandas as pd
+    from scoringbench.data import split_anchors
+    h = [1] * 2 + [2] * 10 + [3] * 40 + [4] * 200 + [5] * 120 + [6] * 28
+    df = pd.DataFrame({"h1": h})
+    anchors, rest = split_anchors(df, 50, seed=1)
+    assert len(anchors) == 50 and len(rest) == 350
+    assert set(anchors.index).isdisjoint(rest.index)
+    share = anchors["h1"].value_counts(normalize=True).reindex(range(1, 7), fill_value=0)
+    pop = df["h1"].value_counts(normalize=True).reindex(range(1, 7), fill_value=0)
+    assert (share - pop).abs().max() < 0.03
+
+
+def test_context_appears_in_prompt():
+    from scoringbench.config import StrategyConfig, TaskConfig
+    from scoringbench.strategies import Vanilla
+    v = Vanilla(StrategyConfig("vanilla"), TaskConfig(rubric="r", context="Grade 8 students"), (1, 6))
+    msg = v.messages({"text": "essay"})[-1]["content"]
+    assert "Grade 8 students" in msg and msg.index("Grade 8") < msg.index("Essay:")

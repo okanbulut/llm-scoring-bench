@@ -43,6 +43,7 @@ def test_run_study_with_fake_backend(tmp_path):
     assert raw["mean_diff"] < -0.5  # the fake rater is harsh
     assert abs(cal["mean_diff"]) < abs(raw["mean_diff"])  # calibration removes most of it
     assert cal["n"] == 120 and raw["n"] == 150
+    assert 0.75 < cal["sd_ratio"] < 1.3  # representative anchors keep the human spread
     assert 0 < raw["prmse"] <= 1 and "smd[ell=Yes]" in m.columns
     assert raw["logprob_share"] == 1.0
     for f in ("predictions.csv", "metrics.csv", "report.html", "run.json"):

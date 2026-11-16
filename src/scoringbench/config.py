@@ -26,6 +26,7 @@ class DataConfig:
 class TaskConfig:
     prompt_text: str = ""  # the writing prompt the students answered
     rubric: str = ""  # rubric text shown to the model
+    context: str = ""  # who wrote the essays and under what conditions, e.g. "Grade 8 students, 45 minutes, no drafts"
 
     @classmethod
     def from_dict(cls, d: dict, base: Path) -> "TaskConfig":
@@ -36,7 +37,7 @@ class TaskConfig:
                 return (base / d[f"{key}_file"]).read_text(encoding="utf-8")
             return ""
 
-        return cls(prompt_text=read("prompt_text"), rubric=read("rubric"))
+        return cls(prompt_text=read("prompt_text"), rubric=read("rubric"), context=read("context"))
 
 
 @dataclass
