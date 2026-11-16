@@ -59,3 +59,22 @@ def test_mts_and_pairwise_run(tmp_path):
 def test_pairwise_with_calibration(tmp_path):
     m = _study(tmp_path, "[{name: pairwise, k: 6, calibrate: quantile, anchors: 20}]")["metrics"].iloc[0]
     assert m["n"] == 60 and abs(m["mean_diff"]) < 0.5 and m["qwk"] > 0.6
+
+
+def test_anchored_ladder(tmp_path):
+    res = _study(tmp_path, "[{name: pairwise, k: 6, calibrate: quantile, anchors: 20},"
+                           " {name: anchored, rounds: 3, calibrate: quantile, anchors: 20},"
+                           " {name: anchored, rounds: 3, peer_k: 4, calibrate: quantile, anchors: 20, label: anch-peer}]",
+                 n=120)
+    m = res["metrics"].set_index("strategy")
+    a = m.loc["anchored+quantile20"]
+    assert a["r"] > 0.75
+    # about rounds * 2 calls per essay plus the anchor chain; peers add more
+    assert 4 <= a["calls_per_essay"] <= 9
+    assert m.loc["anch-peer", "calls_per_essay"] > a["calls_per_essay"]
+
+
+def test_anchored_needs_anchors(tmp_path):
+    import pytest
+    with pytest.raises(ValueError, match="needs anchors"):
+        _study(tmp_path, "[{name: anchored}]")

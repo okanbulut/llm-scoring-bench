@@ -286,7 +286,112 @@ class Fusion(Strategy):
                 for e in range(n)]
 
 
-STRATEGIES = {"vanilla": Vanilla, "mts": MTS, "pairwise": Pairwise, "fusion": Fusion}
+class Anchored(Strategy):
+    """Adaptive comparisons against human-scored anchor essays (an "anchor ladder").
+
+    Needs anchors (calibrate + anchors in the study config); the runner passes their human scores. Each other
+    essay is placed on the ladder of anchor score levels by binary search: it is compared (both orders, same
+    prompt as `pairwise`) with an anchor at the middle of its remaining range and moves up or down by the
+    answer, so about log2(levels) comparisons reach its level; extra rounds compare it with other anchors at
+    the levels it sits between. Anchors are also chained to the next level up. All comparisons go into one
+    Bradley-Terry fit over essays and anchors, and the calibration then maps the anchors' strengths to their
+    human scores. Unlike essay-vs-essay pairs, every comparison here carries known score information.
+    Options: rounds (default 3, about 6 calls per essay with both orders), peer_k (extra essay-vs-essay
+    partners, default 0), seed, both_orders (default true)."""
+
+    name = "anchored"
+
+    def __init__(self, cfg, task, score_range):
+        super().__init__(cfg, task, score_range)
+        self.pairwise = Pairwise(cfg, task, score_range)
+        self.anchor_labels: dict[int, float] = {}
+
+    def score_set(self, essays, ask, workers=4):
+        if not self.anchor_labels:
+            raise ValueError("strategy 'anchored' needs anchors: set calibrate and anchors for it in the config")
+        n = len(essays)
+        opts = self.cfg.options
+        rounds = int(opts.get("rounds", 3))
+        both = bool(opts.get("both_orders", True))
+        rng = np.random.default_rng(int(opts.get("seed", 1)))
+        levels = sorted(set(self.anchor_labels.values()))
+        by_level = {lv: [i for i, h in self.anchor_labels.items() if h == lv] for lv in levels}
+        targets = [i for i in range(n) if i not in self.anchor_labels]
+        calls, tokens = np.zeros(n), np.zeros(n)
+        results: dict[tuple[int, int], list[float]] = {}
+
+        def ask_pairs(pairs):
+            jobs = [(a, b, False) for a, b in pairs] + ([(b, a, True) for a, b in pairs] if both else [])
+
+            def run(job):
+                a, b, _ = job
+                r = ask(self.pairwise.messages(essays[a], essays[b]))
+                return ab_probability(r), r.get("prompt_tokens", 0) + r.get("completion_tokens", 0)
+
+            with ThreadPoolExecutor(max_workers=max(1, workers)) as pool:
+                out = list(pool.map(run, jobs))
+            got: dict[tuple[int, int], list[float]] = {}
+            for (a, b, flipped), (p, tok) in zip(jobs, out):
+                key = (b, a) if flipped else (a, b)
+                got.setdefault(key, []).append(1 - p if flipped else p)
+                # cost accounting: an essay-vs-anchor call is charged to the essay; anchor-vs-anchor calls
+                # are overhead shared by all essays (anchors are not in the test set)
+                side = [e for e in (a, b) if e not in self.anchor_labels]
+                if side:
+                    for e in side:
+                        calls[e] += 1 / len(side); tokens[e] += tok / len(side)
+                else:
+                    calls[targets] += 1 / len(targets); tokens[targets] += tok / len(targets)
+            for key, ps in got.items():
+                results.setdefault(key, []).extend(ps)
+            return {key: float(np.mean(ps)) for key, ps in got.items()}
+
+        used = {i: set() for i in targets}
+
+        def pick(i, lv):
+            pool = [a for a in by_level[lv] if a not in used[i]] or by_level[lv]
+            a = int(rng.choice(pool)); used[i].add(a)
+            return a
+
+        # binary search over the ladder; lo/hi index the levels still possible
+        lo = {i: 0 for i in targets}; hi = {i: len(levels) - 1 for i in targets}
+        for _ in range(rounds):
+            plan = {}
+            for i in targets:
+                if lo[i] <= hi[i]:
+                    mid = (lo[i] + hi[i]) // 2
+                else:  # placed between levels hi and lo: refine against one of those, alternating
+                    cand = [x for x in (hi[i], lo[i]) if 0 <= x < len(levels)]
+                    mid = cand[len(used[i]) % len(cand)]
+                plan[i] = (mid, pick(i, levels[mid]))
+            got = ask_pairs([(i, a) for i, (_, a) in plan.items()])
+            for i, (mid, a) in plan.items():
+                if lo[i] > hi[i]:
+                    continue
+                if got[(i, a)] > 0.5:
+                    lo[i] = mid + 1
+                else:
+                    hi[i] = mid - 1
+        # chain anchors to the next level so the anchors themselves are on one scale
+        chain = []
+        for lv, nxt in zip(levels, levels[1:]):
+            for a in by_level[lv]:
+                chain.append((a, int(rng.choice(by_level[nxt]))))
+        ask_pairs(chain)
+        pairs = [(i, j, float(np.mean(ps))) for (i, j), ps in results.items()]
+        peer_k = int(opts.get("peer_k", 0))
+        if peer_k > 0:
+            peer = Pairwise(StrategyConfig(name="pairwise", options={**opts, "k": peer_k}), self.task, (self.lo, self.hi))
+            extra, c, tok = peer.collect(essays, ask, workers)
+            pairs += extra; calls += c; tokens += tok
+        theta = bradley_terry(n, pairs)
+        scaled = self.minmax(theta)
+        return [{"expected": float(scaled[e]), "raw": float(theta[e]), "mode": float("nan"), "probs": [],
+                 "coverage": 1.0, "source": "logprobs", "calls": float(calls[e]), "tokens": float(tokens[e])}
+                for e in range(n)]
+
+
+STRATEGIES = {"vanilla": Vanilla, "mts": MTS, "pairwise": Pairwise, "fusion": Fusion, "anchored": Anchored}
 
 
 def make_strategy(cfg: StrategyConfig, task: TaskConfig, score_range: tuple[int, int]) -> Strategy:
