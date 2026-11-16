@@ -27,6 +27,9 @@ models:
 strategies:
   - vanilla
   - {name: vanilla, calibrate: quantile, anchors: 25}
+  - mts
+  - {name: pairwise, k: 6}
+  - {name: pairwise, k: 6, calibrate: quantile, anchors: 25}
 output_dir: ../runs
 cache: ../runs/cache.sqlite
 workers: 4

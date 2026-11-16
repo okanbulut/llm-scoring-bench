@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 import time
-from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict
 from pathlib import Path
 
@@ -52,8 +51,7 @@ def run_study(cfg: StudyConfig, out_dir: str | Path | None = None, progress: boo
             strat = make_strategy(s, cfg.task, (lo, hi))
             if progress:
                 print(f"[{m.display} | {s.display}] scoring {len(frame)} essays ...", flush=True)
-            with ThreadPoolExecutor(max_workers=max(1, cfg.workers)) as pool:
-                results = list(pool.map(lambda r: strat.score(r, ask), frame.to_dict("records")))
+            results = strat.score_set(frame.to_dict("records"), ask, cfg.workers)
             res = pd.DataFrame(results)
             pred = frame.drop(columns=["text"]).copy()
             pred["expected"] = res["expected"].values
@@ -63,6 +61,10 @@ def run_study(cfg: StudyConfig, out_dir: str | Path | None = None, progress: boo
             pred["calls"] = res["calls"].values
             pred["tokens"] = res["tokens"].values
             pred["probs"] = [json.dumps(p) for p in res["probs"]]
+            if "raw" in res:
+                pred["raw"] = res["raw"].values
+            if "traits" in res:
+                pred["traits"] = [json.dumps(t) for t in res["traits"]]
             anchors, test = split_anchors(pred, s.anchors, cfg.data.seed) if s.calibrate else (pred.iloc[:0], pred)
             test = test.copy()
             if s.calibrate:

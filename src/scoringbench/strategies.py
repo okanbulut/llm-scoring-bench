@@ -1,12 +1,25 @@
 """Prompt strategies. A strategy turns one essay into one or more chat requests and reads back a score.
 
-Only `vanilla` ships in this first version. MTS (trait-by-trait), LCES (pairwise) and the fusion model
-plug in through the same interface.
+Strategies:
+- vanilla: rubric + essay, one integer; the score distribution is read from log-probabilities.
+- mts: Multi Trait Specialization (Lee et al., 2024): one call per trait, trait scores averaged, then
+  min-max scaled over the essay set to the rubric range.
+- pairwise: comparative judgment in the spirit of LCES (Shibata et al., 2025): each essay is compared with
+  k random partners in both orders, P(A better) from log-probabilities, a Bradley-Terry model with soft
+  outcomes gives a latent quality, min-max scaled to the rubric range.
+
+A strategy scores a whole set (`score_set`), so set-level methods (scaling, pairwise models) fit the same
+interface as per-essay prompting.
 """
 
 from __future__ import annotations
 
+import math
+import re
+from concurrent.futures import ThreadPoolExecutor
 from typing import Callable
+
+import numpy as np
 
 from .config import StrategyConfig, TaskConfig
 from .parse import score_distribution
@@ -23,14 +36,11 @@ class Strategy:
     def score(self, essay: dict, ask: Callable[[list[dict]], dict]) -> dict:
         raise NotImplementedError
 
+    def score_set(self, essays: list[dict], ask: Callable[[list[dict]], dict], workers: int = 4) -> list[dict]:
+        with ThreadPoolExecutor(max_workers=max(1, workers)) as pool:
+            return list(pool.map(lambda e: self.score(e, ask), essays))
 
-class Vanilla(Strategy):
-    """Rubric + essay, answer with one integer. With log-probs, the full distribution over score points
-    is kept, so the expected score is available as well as the most likely score."""
-
-    name = "vanilla"
-
-    def messages(self, essay: dict) -> list[dict]:
+    def header_parts(self) -> list[str]:
         parts = []
         if self.task.context:
             parts.append(f"About the writers:\n{self.task.context.strip()}\nJudge the essay against what the rubric "
@@ -39,6 +49,24 @@ class Vanilla(Strategy):
             parts.append(f"Writing prompt the student answered:\n{self.task.prompt_text.strip()}")
         if self.task.rubric:
             parts.append(f"Scoring rubric:\n{self.task.rubric.strip()}")
+        return parts
+
+    def minmax(self, x) -> np.ndarray:
+        x = np.asarray(x, float)
+        lo, hi = np.nanmin(x), np.nanmax(x)
+        if not np.isfinite(lo) or hi <= lo:
+            return np.full_like(x, (self.lo + self.hi) / 2)
+        return self.lo + (x - lo) / (hi - lo) * (self.hi - self.lo)
+
+
+class Vanilla(Strategy):
+    """Rubric + essay, answer with one integer. With log-probs, the full distribution over score points
+    is kept, so the expected score is available as well as the most likely score."""
+
+    name = "vanilla"
+
+    def messages(self, essay: dict) -> list[dict]:
+        parts = self.header_parts()
         parts.append(f"Essay:\n{essay['text'].strip()}")
         parts.append(f"Score this essay on a scale from {self.lo} to {self.hi}. "
                      f"Answer with a single integer only, with no other text.")
@@ -52,7 +80,146 @@ class Vanilla(Strategy):
         return out
 
 
-STRATEGIES = {"vanilla": Vanilla}
+DEFAULT_TRAITS = [
+    {"name": "Content", "description": "position, ideas, development and use of reasons and evidence"},
+    {"name": "Organization", "description": "structure, introduction and conclusion, paragraphing, transitions, coherence"},
+    {"name": "Language", "description": "word choice, sentence variety, grammar, usage, spelling and mechanics"},
+]
+
+
+class MTS(Strategy):
+    """Multi Trait Specialization (Lee et al., 2024, Findings of EMNLP). Each trait is scored in its own call
+    on the rubric range; the overall score is the mean of trait expected scores, min-max scaled over the set.
+    Options: traits (list of {name, description}); scale: "minmax" (default, as in the paper) or "none"."""
+
+    name = "mts"
+
+    def __init__(self, cfg, task, score_range):
+        super().__init__(cfg, task, score_range)
+        self.traits = cfg.options.get("traits") or DEFAULT_TRAITS
+
+    def messages(self, essay: dict, trait: dict) -> list[dict]:
+        parts = self.header_parts()
+        parts.append(f"Essay:\n{essay['text'].strip()}")
+        parts.append(f"Focus only on this trait: {trait['name']} ({trait['description']}). Ignore every other "
+                     f"aspect of the essay. Score the essay on {trait['name']} on a scale from {self.lo} to {self.hi}. "
+                     f"Answer with a single integer only, with no other text.")
+        return [{"role": "system", "content": SYSTEM}, {"role": "user", "content": "\n\n".join(parts)}]
+
+    def score(self, essay: dict, ask) -> dict:
+        trait_scores, tokens = {}, 0
+        for t in self.traits:
+            reply = ask(self.messages(essay, t))
+            tokens += reply.get("prompt_tokens", 0) + reply.get("completion_tokens", 0)
+            trait_scores[t["name"]] = score_distribution(reply, self.lo, self.hi)
+        exp = [d["expected"] for d in trait_scores.values()]
+        mean = float(np.nanmean(exp)) if not all(math.isnan(e) for e in exp) else float("nan")
+        srcs = {d["source"] for d in trait_scores.values()}
+        return {"expected": mean, "mode": float("nan"), "probs": [], "coverage": float(np.mean([d["coverage"] for d in trait_scores.values()])),
+                "source": "logprobs" if srcs == {"logprobs"} else ("unparsed" if "unparsed" in srcs else "text"),
+                "calls": len(self.traits), "tokens": tokens,
+                "traits": {k: round(v["expected"], 4) for k, v in trait_scores.items()}}
+
+    def score_set(self, essays, ask, workers=4):
+        out = super().score_set(essays, ask, workers)
+        if self.cfg.options.get("scale", "minmax") == "minmax":
+            scaled = self.minmax([o["expected"] for o in out])
+            for o, v in zip(out, scaled):
+                o["raw"], o["expected"] = o["expected"], float(v)
+        return out
+
+
+def ab_probability(reply: dict) -> float:
+    """P(first essay better) from first-token log-probs over "A"/"B"; falls back to the reply text."""
+    lp = reply.get("first_token_logprobs") or {}
+    pa = sum(math.exp(v) for k, v in lp.items() if k.strip().upper() == "A")
+    pb = sum(math.exp(v) for k, v in lp.items() if k.strip().upper() == "B")
+    if pa + pb > 0.5:
+        return pa / (pa + pb)
+    m = re.search(r"\b([AB])\b", (reply.get("content") or "").upper())
+    return {"A": 1.0, "B": 0.0}.get(m.group(1), 0.5) if m else 0.5
+
+
+def bradley_terry(n: int, pairs: list[tuple[int, int, float]], ridge: float = 0.01, iters: int = 200) -> np.ndarray:
+    """Latent strengths from soft pairwise outcomes p = P(i beats j), by Newton steps on the penalised
+    log-likelihood sum p*log s(ti-tj) + (1-p)*log s(tj-ti) - ridge/2 * sum t^2."""
+    theta = np.zeros(n)
+    if not pairs:
+        return theta
+    I = np.array([p[0] for p in pairs]); J = np.array([p[1] for p in pairs]); P = np.array([p[2] for p in pairs])
+    for _ in range(iters):
+        q = 1 / (1 + np.exp(-(theta[I] - theta[J])))
+        g = np.zeros(n); np.add.at(g, I, P - q); np.add.at(g, J, q - P); g -= ridge * theta
+        w = q * (1 - q)
+        H = np.zeros((n, n))
+        np.add.at(H, (I, I), -w); np.add.at(H, (J, J), -w); np.add.at(H, (I, J), w); np.add.at(H, (J, I), w)
+        H -= ridge * np.eye(n)
+        step = np.linalg.solve(H, g)
+        theta -= step
+        if np.abs(step).max() < 1e-6:
+            break
+    return theta - theta.mean()
+
+
+class Pairwise(Strategy):
+    """Comparative judgment. Options: k (partners per essay, default 6), seed, both_orders (default true:
+    each pair is asked as A/B and B/A and the two probabilities averaged, which removes position bias)."""
+
+    name = "pairwise"
+
+    def messages(self, a: dict, b: dict) -> list[dict]:
+        parts = self.header_parts()
+        parts.append(f"Essay A:\n{a['text'].strip()}")
+        parts.append(f"Essay B:\n{b['text'].strip()}")
+        parts.append("Which essay is better according to the rubric? Answer with a single letter, A or B, "
+                     "with no other text.")
+        return [{"role": "system", "content": SYSTEM}, {"role": "user", "content": "\n\n".join(parts)}]
+
+    def plan_pairs(self, n: int) -> list[tuple[int, int]]:
+        k = int(self.cfg.options.get("k", 6))
+        rng = np.random.default_rng(int(self.cfg.options.get("seed", 1)))
+        seen, pairs = set(), []
+        for _ in range(max(1, k // 2) + 1):
+            order = rng.permutation(n)
+            for a, b in zip(order, np.roll(order, 1)):
+                key = (min(a, b), max(a, b))
+                if a != b and key not in seen:
+                    seen.add(key); pairs.append(key)
+        # cap so that each essay has about k partners on average
+        return pairs[: max(1, n * k // 2)]
+
+    def score_set(self, essays, ask, workers=4):
+        n = len(essays)
+        both = bool(self.cfg.options.get("both_orders", True))
+        jobs = []
+        for i, j in self.plan_pairs(n):
+            jobs.append((i, j, False))
+            if both:
+                jobs.append((j, i, True))
+
+        def run(job):
+            a, b, _ = job
+            r = ask(self.messages(essays[a], essays[b]))
+            return ab_probability(r), r.get("prompt_tokens", 0) + r.get("completion_tokens", 0)
+
+        with ThreadPoolExecutor(max_workers=max(1, workers)) as pool:
+            res = list(pool.map(run, jobs))
+        calls, tokens = np.zeros(n), np.zeros(n)
+        prob = {}
+        for (a, b, flipped), (p, tok) in zip(jobs, res):
+            key = (b, a) if flipped else (a, b)
+            prob.setdefault(key, []).append(1 - p if flipped else p)
+            for e in (a, b):
+                calls[e] += 0.5; tokens[e] += tok / 2
+        pairs = [(i, j, float(np.mean(ps))) for (i, j), ps in prob.items()]
+        theta = bradley_terry(n, pairs)
+        scaled = self.minmax(theta)
+        return [{"expected": float(scaled[e]), "raw": float(theta[e]), "mode": float("nan"), "probs": [],
+                 "coverage": 1.0, "source": "logprobs", "calls": float(calls[e]), "tokens": float(tokens[e])}
+                for e in range(n)]
+
+
+STRATEGIES = {"vanilla": Vanilla, "mts": MTS, "pairwise": Pairwise}
 
 
 def make_strategy(cfg: StrategyConfig, task: TaskConfig, score_range: tuple[int, int]) -> Strategy:
