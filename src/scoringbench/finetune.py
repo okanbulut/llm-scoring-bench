@@ -35,7 +35,7 @@ def finetune_predict(train_texts, train_y, all_texts, model_name, epochs=10, lr=
     y = np.asarray(train_y, float)
     mu, sd = y.mean(), y.std() + 1e-9
     yz = torch.tensor((y - mu) / sd, dtype=torch.float32)
-    enc = tok(list(train_texts), truncation=True, max_length=max_length, padding=True, return_tensors="pt")
+    train_texts = list(train_texts)
     n = len(y)
     steps = max(1, epochs * int(np.ceil(n / batch_size)) // grad_accum)
     opt = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=weight_decay)
@@ -46,23 +46,28 @@ def finetune_predict(train_texts, train_y, all_texts, model_name, epochs=10, lr=
     for _ in range(epochs):
         order = rng.permutation(n)
         for s in range(0, n, batch_size):
-            ix = torch.tensor(order[s:s + batch_size])
-            batch = {kk: v[ix].to(dev) for kk, v in enc.items()}
+            ix = order[s:s + batch_size]
+            # pad each batch to its own longest essay, not the longest in the training set
+            batch = tok([train_texts[i] for i in ix], truncation=True, max_length=max_length, padding=True,
+                        return_tensors="pt").to(dev)
             out = model(**batch)
-            loss = torch.nn.functional.mse_loss(out.logits.squeeze(-1), yz[ix].to(dev)) / grad_accum
+            loss = torch.nn.functional.mse_loss(out.logits.squeeze(-1), yz[torch.tensor(ix)].to(dev)) / grad_accum
             loss.backward()
             k += 1
             if k % grad_accum == 0:
                 torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
                 opt.step(); sch.step(); opt.zero_grad()
     model.eval()
-    preds = []
+    all_texts = list(all_texts)
+    order = np.argsort([len(t) for t in all_texts])  # length-sorted batches waste less padding
+    pred = np.empty(len(all_texts))
     with torch.no_grad():
-        for s in range(0, len(all_texts), 16):
-            e = tok(list(all_texts[s:s + 16]), truncation=True, max_length=max_length, padding=True,
+        for s in range(0, len(order), 16):
+            ix = order[s:s + 16]
+            e = tok([all_texts[i] for i in ix], truncation=True, max_length=max_length, padding=True,
                     return_tensors="pt").to(dev)
-            preds.append(model(**e).logits.squeeze(-1).float().cpu().numpy())
+            pred[ix] = model(**e).logits.squeeze(-1).float().cpu().numpy()
     del model
     if dev == "mps":
         torch.mps.empty_cache()
-    return np.concatenate(preds) * sd + mu
+    return pred * sd + mu
