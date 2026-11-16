@@ -235,8 +235,11 @@ class Fusion(Strategy):
     a graded response model per score indicator (own discrimination and thresholds, which absorb severity and
     scale compression) and a Bradley-Terry model for comparisons. Output: the latent score (MAP) and its SE,
     min-max scaled to the rubric range unless a calibration is set.
+    v2: a method factor shared by the score indicators (method_sd). With anchors (calibrate + anchors set),
+    method_sd is chosen on the anchors' human scores from METHOD_SD_GRID unless fixed in the options.
     Options: components (subset of [vanilla, mts, pairwise]; default all), traits, k, seed, both_orders,
-    scale ("minmax" or "none")."""
+    scale ("minmax" or "none"), method_sd (a number, or "tune"; default "tune", which falls back to 0 = v1
+    when there are no anchors), method_sd_grid."""
 
     name = "fusion"
 
@@ -246,6 +249,7 @@ class Fusion(Strategy):
         self.vanilla = Vanilla(cfg, task, score_range)
         self.mts = MTS(cfg, task, score_range)
         self.pairwise = Pairwise(cfg, task, score_range)
+        self.anchor_labels: dict[int, float] = {}  # set by the runner: essay position -> human score
 
     def score_set(self, essays, ask, workers=4):
         from .fusion import fit_fusion
@@ -266,7 +270,14 @@ class Fusion(Strategy):
         if "pairwise" in self.components:
             pairs, c, tok = self.pairwise.collect(essays, ask, workers)
             calls += c; tokens += tok
-        fit = fit_fusion(indicators, pairs, n)
+        msd = self.cfg.options.get("method_sd", "tune")
+        if msd == "tune" and self.anchor_labels and pairs and indicators:
+            from .fusion import METHOD_SD_GRID, tune_method_sd
+            idx = sorted(self.anchor_labels)
+            grid = tuple(self.cfg.options.get("method_sd_grid", METHOD_SD_GRID))
+            fit = tune_method_sd(indicators, pairs, n, idx, [self.anchor_labels[i] for i in idx], grid)
+        else:
+            fit = fit_fusion(indicators, pairs, n, method_sd=0.0 if msd == "tune" else float(msd))
         theta, se = fit["theta"], fit["se"]
         scaled = self.minmax(theta) if self.cfg.options.get("scale", "minmax") == "minmax" else theta
         return [{"expected": float(scaled[e]), "raw": float(theta[e]), "se": float(se[e]), "mode": float("nan"),

@@ -15,6 +15,7 @@ from .cache import Cache, request_key
 from .calibrate import CALIBRATORS
 from .config import StudyConfig
 from .data import load_essays, split_anchors
+from .metrics import reliability_check
 from .metrics import evaluate, human_benchmark
 from .report import write_report
 from .strategies import make_strategy
@@ -50,6 +51,11 @@ def run_study(cfg: StudyConfig, out_dir: str | Path | None = None, progress: boo
         ask = _asker(make_backend(m, cfg.base_dir), m, cache)
         for s in cfg.strategies:
             strat = make_strategy(s, cfg.task, (lo, hi))
+            if s.calibrate and hasattr(strat, "anchor_labels"):
+                # same split as below (same seed, same h1), made before scoring so a strategy can tune on it
+                anc, _ = split_anchors(frame, s.anchors, cfg.data.seed)
+                pos = {ix: k for k, ix in enumerate(frame.index)}
+                strat.anchor_labels = {pos[ix]: float(h) for ix, h in anc["h1"].items()}
             if progress:
                 print(f"[{m.display} | {s.display}] scoring {len(frame)} essays ...", flush=True)
             results = strat.score_set(frame.to_dict("records"), ask, cfg.workers)
@@ -81,6 +87,8 @@ def run_study(cfg: StudyConfig, out_dir: str | Path | None = None, progress: boo
             test["model"], test["strategy"] = m.display, s.display
             rows.append(test)
             met = evaluate(test, "score_cont", "score_int", lo, hi, essays.groups)
+            if "se" in test and "raw" in test:
+                met.update(reliability_check(test))
             met.update({"model": m.display, "strategy": s.display, "anchors": len(anchors),
                         "logprob_share": float((test["source"] == "logprobs").mean()),
                         "unparsed": int((test["source"] == "unparsed").sum()),

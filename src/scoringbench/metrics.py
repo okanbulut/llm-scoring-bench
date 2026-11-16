@@ -125,3 +125,21 @@ def human_benchmark(df: pd.DataFrame, lo: int, hi: int) -> dict:
         return {}
     return {"n": int(df["h2"].notna().sum()), "qwk": qwk(df["h1"], df["h2"], lo, hi), **agreement(df["h1"], df["h2"]),
             "smd": smd(df["h2"], df["h1"])}
+
+
+def reliability_check(frame, raw="raw", se="se") -> dict:
+    """Do the SEs mean what they say? Compares the reliability the model claims for its latent score,
+    var(theta) / (var(theta) + mean se^2), with an empirical estimate: corr(theta, h1)^2 / corr(h1, h2),
+    i.e. the squared correlation with the human true score when two raters exist (else corr(theta, h1)^2,
+    a lower bound). rel_model well above rel_emp means the SEs are too small."""
+    th = frame[raw].to_numpy(float)
+    s = frame[se].to_numpy(float)
+    rel_model = float(np.var(th) / (np.var(th) + np.mean(s ** 2)))
+    r1 = float(np.corrcoef(th, frame["h1"].to_numpy(float))[0, 1])
+    out = {"rel_model": rel_model, "rel_emp": r1 ** 2}
+    if "h2" in frame and frame["h2"].notna().all():
+        rhh = float(np.corrcoef(frame["h1"].to_numpy(float), frame["h2"].to_numpy(float))[0, 1])
+        if rhh > 0:
+            out["rel_emp"] = min(1.0, r1 ** 2 / rhh)
+    out["se_ratio"] = float(np.sqrt((1 - out["rel_emp"]) / max(1 - rel_model, 1e-9)))
+    return out
