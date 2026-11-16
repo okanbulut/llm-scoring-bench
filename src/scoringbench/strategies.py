@@ -391,7 +391,83 @@ class Anchored(Strategy):
                 for e in range(n)]
 
 
-STRATEGIES = {"vanilla": Vanilla, "mts": MTS, "pairwise": Pairwise, "fusion": Fusion, "anchored": Anchored}
+class Hybrid(Strategy):
+    """Embeddings + anchors hybrid.
+
+    A ridge regression from essay embeddings to human scores is trained on the anchors only (alpha by exact
+    leave-one-out), and its prediction is mixed with an LLM strategy's latent score:
+        score = w * z(embedding prediction) + (1 - w) * z(LLM score),
+    with w chosen on the anchors from a grid. The anchors' own embedding predictions are out-of-fold, so
+    neither w nor the later calibration sees an anchor's score fitted on itself.
+    Options: base (an LLM strategy name, default pairwise; or "none" for embeddings only), base_options,
+    embed ({backend: openai | sentence-transformers | fake, model, base_url, api_key_env, api_key_file}),
+    weight_grid (default 0, .1, ..., 1), alphas."""
+
+    name = "hybrid"
+
+    def __init__(self, cfg, task, score_range):
+        super().__init__(cfg, task, score_range)
+        base = cfg.options.get("base", "pairwise")
+        self.base = None if base == "none" else STRATEGIES[base](
+            StrategyConfig(name=base, options=dict(cfg.options.get("base_options", {}))), task, score_range)
+        self.anchor_labels: dict[int, float] = {}
+        self.embed_cache = None  # set by the runner
+        self.base_dir = None
+
+    def score_set(self, essays, ask, workers=4):
+        from pathlib import Path
+
+        from .embeddings import embed_texts, ridge_loo
+
+        if not self.anchor_labels:
+            raise ValueError("strategy 'hybrid' needs anchors: set calibrate and anchors for it in the config")
+        n = len(essays)
+        opts = self.cfg.options
+        idx = sorted(self.anchor_labels)
+        y = np.array([self.anchor_labels[i] for i in idx], float)
+        rest = np.array([i for i in range(n) if i not in self.anchor_labels], int)
+
+        E = embed_texts([e["text"] for e in essays], dict(opts.get("embed", {"backend": "fake"})),
+                        self.embed_cache, Path(self.base_dir or "."))
+        alphas = tuple(opts.get("alphas", (0.1, 1, 10, 100, 1000, 1e4)))
+        rr = ridge_loo(E[idx], y, alphas)
+        emb = np.empty(n)
+        emb[idx] = rr["oof"]
+        if len(rest):
+            emb[rest] = rr["predict"](E[rest])
+
+        def z(v):
+            v = np.asarray(v, float)
+            return (v - v.mean()) / (v.std() + 1e-12)
+
+        calls, tokens = np.zeros(n), np.zeros(n)
+        if self.base is not None:
+            if hasattr(self.base, "anchor_labels"):
+                self.base.anchor_labels = self.anchor_labels
+            out = self.base.score_set(essays, ask, workers)
+            llm = np.array([o.get("raw", o["expected"]) for o in out], float)
+            calls += [o["calls"] for o in out]; tokens += [o["tokens"] for o in out]
+            grid = [float(w) for w in opts.get("weight_grid", np.round(np.linspace(0, 1, 11), 2))]
+        else:
+            llm = np.zeros(n)
+            grid = [1.0]
+        ze, zl = z(emb), z(llm) if self.base is not None else np.zeros(n)
+        table = {}
+        for w in grid:
+            comb = w * ze[idx] + (1 - w) * zl[idx]
+            table[str(w)] = round(float(np.corrcoef(comb, y)[0, 1]) if comb.std() > 0 else -1.0, 4)
+        w = max(grid, key=lambda g: table[str(g)])
+        score = w * ze + (1 - w) * zl
+        scaled = self.minmax(score)
+        params = {"weight_embedding": w, "ridge_alpha": rr["alpha"], "weight_table": table,
+                  "anchor_r_embedding": round(float(np.corrcoef(rr["oof"], y)[0, 1]), 4)}
+        return [{"expected": float(scaled[e]), "raw": float(score[e]), "mode": float("nan"), "probs": [],
+                 "coverage": 1.0, "source": "logprobs", "calls": float(calls[e]), "tokens": float(tokens[e]),
+                 "fusion_params": params if e == 0 else None} for e in range(n)]
+
+
+STRATEGIES = {"vanilla": Vanilla, "mts": MTS, "pairwise": Pairwise, "fusion": Fusion, "anchored": Anchored,
+              "hybrid": Hybrid}
 
 
 def make_strategy(cfg: StrategyConfig, task: TaskConfig, score_range: tuple[int, int]) -> Strategy:

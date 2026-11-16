@@ -56,6 +56,8 @@ def run_study(cfg: StudyConfig, out_dir: str | Path | None = None, progress: boo
                 anc, _ = split_anchors(frame, s.anchors, cfg.data.seed)
                 pos = {ix: k for k, ix in enumerate(frame.index)}
                 strat.anchor_labels = {pos[ix]: float(h) for ix, h in anc["h1"].items()}
+            if hasattr(strat, "embed_cache"):
+                strat.embed_cache, strat.base_dir = cache, cfg.base_dir
             if progress:
                 print(f"[{m.display} | {s.display}] scoring {len(frame)} essays ...", flush=True)
             results = strat.score_set(frame.to_dict("records"), ask, cfg.workers)
