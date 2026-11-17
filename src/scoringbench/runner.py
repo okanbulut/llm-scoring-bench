@@ -51,7 +51,7 @@ def run_study(cfg: StudyConfig, out_dir: str | Path | None = None, progress: boo
         ask = _asker(make_backend(m, cfg.base_dir), m, cache)
         for s in cfg.strategies:
             strat = make_strategy(s, cfg.task, (lo, hi))
-            if s.calibrate and hasattr(strat, "anchor_labels"):
+            if (s.calibrate or s.anchors) and hasattr(strat, "anchor_labels"):
                 # same split as below (same seed, same h1), made before scoring so a strategy can tune on it
                 anc, _ = split_anchors(frame, s.anchors, cfg.data.seed)
                 pos = {ix: k for k, ix in enumerate(frame.index)}
@@ -78,7 +78,8 @@ def run_study(cfg: StudyConfig, out_dir: str | Path | None = None, progress: boo
                 fusion_params[f"{m.display} | {s.display}"] = res["fusion_params"].dropna().iloc[0]
             if "traits" in res:
                 pred["traits"] = [json.dumps(t) for t in res["traits"]]
-            anchors, test = split_anchors(pred, s.anchors, cfg.data.seed) if s.calibrate else (pred.iloc[:0], pred)
+            anchors, test = split_anchors(pred, s.anchors, cfg.data.seed) if (s.calibrate or s.anchors) \
+                else (pred.iloc[:0], pred)
             test = test.copy()
             if s.calibrate:
                 cal = CALIBRATORS[s.calibrate]().fit(anchors["expected"], anchors["h1"])

@@ -107,3 +107,40 @@ def test_ridge_loo_matches_refits():
         keep = np.arange(30) != i
         sub = ridge_loo(X[keep], y[keep], (10.0,))
         assert abs(sub["predict"](X[i:i + 1])[0] - r["oof"][i]) < 1e-8
+
+
+def test_finetune_fake_and_seeds_command(tmp_path):
+    from scoringbench.config import load_config
+    from scoringbench.seeds import run_seeds
+
+    res = _study(tmp_path, "[{name: pairwise, k: 6, calibrate: quantile, anchors: 30},"
+                           " {name: finetune, model: fake, anchors: 30, label: ft},"
+                           " {name: hybrid, calibrate: quantile, anchors: 30, base_options: {k: 6}, label: hyb}]",
+                 n=120)
+    m = res["metrics"].set_index("strategy")
+    assert m.loc["ft", "n"] == 90 and m.loc["ft", "calls_per_essay"] == 0
+    cfg = load_config(tmp_path / "s.yaml")
+    out = run_seeds(cfg, [20, 30], n_seeds=3, baseline="pairwise+quantile30", out_dir=tmp_path / "sd",
+                    progress=False)
+    runs = out["runs"]
+    assert set(runs.anchors) == {20, 30} and runs.seed.max() == 3
+    assert len(runs) == 3 * 2 * 3  # strategies x anchor counts x seeds
+    d = out["diff"].set_index(["strategy", "anchors"])
+    assert d.loc[("hyb", 30), "draws"] == 3 and 0 <= d.loc[("hyb", 30), "wins"] <= 3
+    # seed 1 at the config's anchor count reproduces the plain run exactly
+    r1 = runs.query("strategy == 'hyb' and anchors == 30 and seed == 1")["qwk"].iloc[0]
+    assert abs(r1 - m.loc["hyb", "qwk"]) < 1e-9
+    assert (tmp_path / "sd" / "seeds_diff.csv").exists()
+
+
+def test_seeds_cache_only_refuses_new_calls(tmp_path):
+    import pytest
+    from scoringbench.config import load_config
+    from scoringbench.seeds import CacheMiss, run_seeds
+
+    _study(tmp_path, "[vanilla]", n=40)
+    cfg = load_config(tmp_path / "s.yaml")
+    cfg.strategies[0].options["k"] = 4
+    cfg.strategies[0].name = "pairwise"  # never asked before -> not cached
+    with pytest.raises(CacheMiss):
+        run_seeds(cfg, [10], n_seeds=1, out_dir=tmp_path / "sd", progress=False)
